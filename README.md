@@ -6,6 +6,9 @@
 **Curso:** Seguridad de Redes
 
 ---
+LINK DEL VIDEO:
+https://youtu.be/C3NzNoggquQ
+
 
 ## ⚠️ ADVERTENCIA LEGAL
 
