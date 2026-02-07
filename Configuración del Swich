@@ -1,0 +1,22 @@
+enable
+conf t
+hostname SW-R1
+no ip domain lookup 
+
+vlan 12
+name contabilidad
+vlan 200
+name nativa
+exit
+
+
+int g0/0
+switchport mode trunk 
+switchport trunk native vlan 200
+no shutdown
+exit
+
+int range g0/1-2
+switchport mode access
+switchport access vlan 12
+exit
